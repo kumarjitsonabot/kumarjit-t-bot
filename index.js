@@ -1,207 +1,237 @@
-import { makeWASocket, useMultiFileAuthState, DisconnectReason } from '@whiskeysockets/baileys';
-import pino from 'pino';
-import readline from 'readline';
-
-const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-const question = (text) => new Promise((resolve) => rl.question(text, resolve));
+const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys');
+const axios = require('axios');
 
 async function startBot() {
-    const { state, saveCreds } = await useMultiFileAuthState('auth_info_baileys');
-
+    const { state, saveCreds } = await useMultiFileAuthState('session');
+    
     const sock = makeWASocket({
-        logger: pino({ level: 'silent' }),
-        printQRInTerminal: false,
+        printQRInTerminal: true,
         auth: state
     });
 
-    if (!sock.authState.creds.registered) {
-        console.log('\n========================================');
-        const phoneNumber = await question('Please enter your WhatsApp phone number (e.g., 919876543210): ');
-        console.log('========================================\n');
-        
-        setTimeout(async () => {
-            try {
-                let code = await sock.requestPairingCode(phoneNumber.trim());
-                console.log(`\n✨ Your Pairing Code is: ${code}\n`);
-            } catch (err) {
-                console.log('Error getting pairing code:', err);
-            }
-        }, 3000);
-    }
+    sock.ev.on('creds.update', saveCreds);
 
     sock.ev.on('connection.update', (update) => {
         const { connection, lastDisconnect } = update;
         if (connection === 'close') {
             const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
             console.log('Connection closed. Reconnecting...', shouldReconnect);
-            if (shouldReconnect) {
-                startBot();
-            }
+            if (shouldReconnect) startBot();
         } else if (connection === 'open') {
-            console.log('\n🚀 KUMARJIT T BOT is successfully connected and online!\n');
+            console.log('KUMARJIT T BOT Connected Successfully! 🚀');
         }
     });
 
-    sock.ev.on('creds.update', saveCreds);
-
-    // -------------------------------------------------------------
-    // ১. গ্রুপে কেউ নতুন আসলে (Welcome) এবং কেউ চলে গেলে (Goodbye)
-    // -------------------------------------------------------------
-    sock.ev.on('group-participants.update', async (data) => {
+    sock.ev.on('messages.upsert', async (m) => {
         try {
-            const { id, participants, action } = data;
-            
-            // ওয়েলকাম মেসেজ
-            if (action === 'add') {
-                for (let num of participants) {
-                    let groupWelcome = `┏━━❖ *ROYAL WELCOME* ❖━━┓
-┃
-┃  ✨ স্বাগত জানাই আমাদের পরিবারে! ✨
-┃  👤 মেম্বার: @${num.split('@')[0]}
-┃
-┃  📌 *গ্রুপের কিছু নিয়মকানুন:*
-┃  ▪️ সবসময় সম্মান বজায় রাখুন।
-┃  ▪️ অপ্রয়োজনীয় স্প্যাম থেকে বিরত রাখুন।
-┃  ▪️ সুন্দর পরিবেশে আড্ডা জমিয়ে তুলুন।
-┃
-┗━━━━━━━━━━━━━━━━━━━━━━┛
-⚡ *Powered By KUMARJIT T BOT*`;
-                    await sock.sendMessage(id, { text: groupWelcome, mentions: [num] });
-                }
+            const msg = m.messages[0];
+            if (!msg.message || msg.key.fromMe) return;
+
+            const from = msg.key.remoteJid;
+            const type = Object.keys(msg.message)[0];
+            const body = type === 'conversation' ? msg.message.conversation :
+                         type === 'extendedTextMessage' ? msg.message.extendedTextMessage.text : '';
+
+            if (!body.startsWith('.')) return;
+
+            const args = body.slice(1).trim().split(/ +/);
+            const command = args.shift().toLowerCase();
+            const text = args.join(' ');
+            const senderNumber = msg.key.participant || msg.key.remoteJid;
+            const isOwner = senderNumber.includes('917980435535');
+
+            // MAIN MENU HUB
+            if (command === 'menu' || command === 'help') {
+                const menuList = `
+╭─── 🤖 *KUMARJIT T BOT MENU HUB* ───╮
+│
+├─ 📂 *.menu1* ➔ Minimal Style (Owner Only)
+├─ 📂 *.menu2* ➔ Cyber Tech Style (Owner Only)
+├─ 📂 *.menu3* ➔ Modern Card Style (Owner Only)
+│
+╰────────────────────────────────╯
+💡 *নোট:* .menu1, .menu2, .menu3 কমান্ডগুলো শুধুমাত্র বট ওনার ব্যবহার করতে পারবেন।`;
+                await sock.sendMessage(from, { text: menuList });
             }
-            
-            // গুডবাই মেসেজ (কেউ গ্রুপ ছাড়লে বা বের করে দিলে)
-            else if (action === 'remove') {
-                for (let num of participants) {
-                    let groupGoodbye = `┏━━━❖ *GOODBYE* ❖━━━┓
-┃
-┃  👋 আমাদের গ্রুপ থেকে চলে গেলেন:
-┃  👤 @${num.split('@')[0]}
-┃
-┃  ভবিষ্যতে আবার দেখা হবে! ভালো থাকবেন।
-┃
-┗━━━━━━━━━━━━━━━━━━━━━━┛
-⚡ *Powered By KUMARJIT T BOT*`;
-                    await sock.sendMessage(id, { text: groupGoodbye, mentions: [num] });
-                }
-            }
-        } catch (err) {
-            console.log('Group participant update error:', err);
-        }
-    });
 
-    // -------------------------------------------------------------
-    // ২. মেসেজ ও কমান্ড হ্যান্ডেলার
-    // -------------------------------------------------------------
-    sock.ev.on('messages.upsert', async ({ messages }) => {
-        const m = messages[0];
-        if (!m.message) return;
+            // MENU 1: ULTRA MINIMAL (OWNER ONLY)
+            else if (command === 'menu1') {
+                if (!isOwner) return await sock.sendMessage(from, { text: '⚠️ শুধুমাত্র বট ওনার এই কমান্ড ব্যবহার করতে পারবেন।' });
+                const menu1Text = `
+┌─────────────────────────────┐
+│    👑 *KUMARJIT T BOT* 👑   │
+│     — OPTION 1: MINIMAL —   │
+└─────────────────────────────┘
 
-        const messageType = Object.keys(m.message)[0];
-        const body = messageType === 'conversation' ? m.message.conversation :
-                     messageType === 'extendedTextMessage' ? m.message.extendedTextMessage.text : '';
-        
-        const sender = m.key.remoteJid;
-        const text = body.toLowerCase().trim();
-        const userJid = m.key.participant || sender; // কে মেসেজ পাঠিয়েছে
-
-        // ---------------------------------------------------------
-        // প্রিমিয়াম .welcome কমান্ড
-        // ---------------------------------------------------------
-        if (text === '.welcome' || text === 'welcome') {
-            let topWelcome = `┏━━━❖ *KUMARJIT T BOT* ❖━━━┓
-┃
-┃  🌟 *WELCOME TO THE MATRIX* 🌟
-┃
-┃  হ্যালো ব্যবহারকারী! অসাধারণ একটি 
-┃  অটোমেশন অভিজ্ঞতার মুখোমুখি হতে 
-┃  আপনি প্রস্তুত তো? 🚀
-┃
-┃  👑 *বটের বিশেষ ক্ষমতা:*
-┃  🔹 ১০০+ প্রিমিয়াম ফিচার ও কমান্ড
-┃  🔹 সুপার ফাস্ট রেসপন্স স্পিড
-┃  🔹 এআই এবং মিডিয়া ডাউনলোডার
-┃
-┃  💡 সব কমান্ডের তালিকা একনজরে দেখতে 
-┃  টাইপ করুন: \`.menu\`
-┃
-┗━━━━━━━━━━━━━━━━━━━━━━┛
-⚡ *Powered By KUMARJIT T BOT*`;
-            await sock.sendMessage(sender, { text: topWelcome }, { quoted: m });
-        }
-
-        // ---------------------------------------------------------
-        // মেনু মেসেজ (.menu)
-        // ---------------------------------------------------------
-        else if (text === 'hi' || text === 'hello' || text === '.menu' || text === 'menu') {
-            let menuText = `┏━━━❖ *KUMARJIT T BOT* ❖━━━┓
-┃
-┃  🤖 *MAIN COMMAND HUB*
-┃  আপনার সুবিধার জন্য ক্যাটাগরি অনুযায়ী 
-┃  ১০০+ ফিচারের বিশাল তালিকা নিচে দেওয়া হলো:
-┃
-┗━━━━━━━━━━━━━━━━━━━━━━┛
-
-👑 *[00] স্পেশাল প্রিমিয়াম ফিচার*
-• .welcome - প্রিমিয়াম ওয়েলকাম কার্ড দেখুন
-• .km1 - অটো গ্রুপ অ্যাডমিন পাওয়ার হ্যাক কমান্ড
-• .owner - বটের ওনারের অফিশিয়াল ইনফো
+👑 *[00] ওনার স্পেশাল ড্যাশবোর্ড*
+• .km1 - অটো গ্রুপ অ্যাডমিন পাওয়ার
+• .owner - বটের ওনারের অফিসিয়াল কন্টাক্ট
 • .ping - বটের লাইভ সার্ভার স্পিড চেক
 
-📁 *[01-20] ইউটিলিটি ও টুলস কমান্ড*
+🛠️ *[01-20] ইউটিলিটি ও টুলস কমান্ড*
 1. .ping - সিস্টেম লেটেন্সি চেক
 2. .runtime - বট আপটাইম কাউন্টার
-3. .qc - প্রিমিয়াম কোট জেনারেটর
-4. .calc - অ্যাডভান্সড ম্যাথ ক্যালকুলেটর
-5. .qr - টেক্সট থেকে কিউআর কোড মেকার
-6. .weather - লাইভ আবহাওয়া আপডেট
+3. .qc - প্রিমিয়াম কোট জেনারেটর
+4. .calc - অ্যাডভান্সড ক্যালকুলেটর
+5. .qr - টেক্সট থেকে কিউআর কোড
+6. .weather - লাইভ আবহাওয়া আপডেট
 
-📁 *[21-40] মিডিয়া ও ডাউনলোডার কমান্ড*
-21. .ytmp3 - ইউটিউব অডিও কনভার্টার
-22. .ytmp4 - ইউটিউব এইচডি ভিডিও ডাউনলোডার
+📁 *[21-40] মিডিয়া ও ডাউনলোড কমান্ড*
+21. .ytmp3 - ইউটিউব অডিও ডাউনলোডার
+22. .ytmp4 - ইউটিউব ভিডিও ডাউনলোডার
+23. .insta - ইনস্টাগ্রাম ভিডিও/রিলস ডাউনলোডার
+24. .fb - ফেসবুক এইচডি ভিডিও ডাউনলোডার
 
-📁 *[41-60] এআই ও স্মার্ট চ্যাট ফিচার*
-41. .ai - স্মার্ট কৃত্রিম বুদ্ধিমত্তা চ্যাট
-📁 *[61-80] গ্রুপ ম্যানেজমেন্ট কমান্ড*
-61. .tagall - গ্রুপের সবাইকে মেনশন ও ট্যাগ
-62. .km1 - সিক্রেট অ্যাডমিন প্রমোশন কমান্ড
+🤖 *[41-60] এআই ও স্মার্ট চ্যাট*
+41. .ai - জেমিনি কৃত্রিম বুদ্ধিমত্তা চ্যাট
 
-📈 এবং আরও ১০০+ এর বেশি কমান্ড যুক্ত আছে!
+👥 *[61-80] গ্রুপ ম্যানেজমেন্ট কমান্ড*
+61. .tagall - গ্রুপের সবাইকে ট্যাগ
+62. .welcome - প্রিমিয়াম ওয়েলকাম কার্ড
+63. .goodbye - বিদায় বার্তা সেটআপ
+
+──────────────────────────────
 ⚡ *Powered By KUMARJIT T BOT*`;
-
-            await sock.sendMessage(sender, { text: menuText }, { quoted: m });
-        }
-
-        // ---------------------------------------------------------
-        // ৩. তোমার চাওয়া সিক্রেট কমান্ড: .km1 (অ্যাডমিন পাওয়ার নেওয়া)
-        // ---------------------------------------------------------
-        else if (text === '.km1') {
-            // চেক করা হচ্ছে মেসেজটি কোনো গ্রুপ থেকে এসেছে কি না
-            if (!sender.endsWith('@g.us')) {
-                await sock.sendMessage(sender, { text: '❌ এই কমান্ডটি শুধুমাত্র হোয়াটসঅ্যাপ গ্রুপে কাজ করবে!' }, { quoted: m });
-                return;
+                await sock.sendMessage(from, { text: menu1Text });
             }
 
-            try {
-                // বটকে কমান্ড দিয়ে মেসেজ পাঠাতকারীকে (অথবা নির্দিষ্ট নম্বরকে) অ্যাডমিন বানানোর রিকোয়েস্ট পাঠানো
-                // (নোট: যে বট পেয়ার করেছে সে গ্রুপের অ্যাডমিন হলে এটি সফল হবে)
-                await sock.groupParticipantsUpdate(sender, [userJid], 'promote');
-                
-                let successMsg = `┏━━━❖ *ADMIN PROMOTED* ❖━━━┓
-┃
-┃  🔥 সাকসেসফুল! 
-┃  সিক্রেট কমান্ড \`.km1\` এক্সিকিউট করা হয়েছে।
-┃  আপনাকে গ্রুপে অ্যাডমিন করা হয়েছে! ✅
-┃
-┗━━━━━━━━━━━━━━━━━━━━━━┛
-⚡ *Powered By KUMARJIT T BOT*`;
-                await sock.sendMessage(sender, { text: successMsg }, { quoted: m });
-            } catch (err) {
-                let failMsg = `❌ অ্যাডমিন দিতে সমস্যা হয়েছে! নিশ্চিত করুন যে বট নিজে অথবা বটের পেয়ার করা ইউজার এই গ্রুপের অ্যাডমিন আছেন।`;
-                await sock.sendMessage(sender, { text: failMsg }, { quoted: m });
+            // MENU 2: CYBER TECH (OWNER ONLY)
+            else if (command === 'menu2') {
+                if (!isOwner) return await sock.sendMessage(from, { text: '⚠️ শুধুমাত্র বট ওনার এই কমান্ড ব্যবহার করতে পারবেন।' });
+                const menu2Text = `
+⚡ [ *KUMARJIT T BOT - CYBER MENU* ] ⚡
+═════════════════════════════════
+💻 *SYSTEM STATUS & METRICS*
+│ ├ Speed : 0.001s
+│ ├ Status: ONLINE 🟢
+│ └ Owner : Kumarjit
+═════════════════════════════════
+👑 *OWNER EXCLUSIVE COMMANDS*
+│ ├ 👑 [.km1]     - Auto Admin Hack
+│ ├ 👤 [.owner]   - Owner Official Info
+│ └ ⚡ [.ping]    - Server Speed Test
+═════════════════════════════
+🛠️ *UTILITY & SYSTEM TOOLS*
+│ ├ 1. [.ping]    - Latency Check
+│ ├ 2. [.runtime] - Uptime Counter
+│ ├ 3. [.calc]    - Math Calculator
+│ ├ 4. [.qr]      - QR Code Maker
+│ └ 5. [.weather] - Weather Update
+═════════════════════════════
+📁 *MEDIA & DOWNLOADS*
+│ ├ 21. [.ytmp3] - YouTube Audio
+│ ├ 22. [.ytmp4] - YouTube Video
+│ ├ 23. [.insta] - Instagram Reels
+│ └ 24. [.fb]    - Facebook Video
+═════════════════════════════
+🤖 *AI & GROUP MANAGEMENT*
+│ ├ 41. [.ai]      - Gemini AI Chat
+│ ├ 61. [.tagall]  - Tag All Members
+│ ├ 62. [.welcome] - Welcome Card
+│ └ 63. [.goodbye] - Goodbye Card
+═════════════════════════════════
+⚡ *POWERED BY KUMARJIT T BOT*`;
+                await sock.sendMessage(from, { text: menu2Text });
             }
-        }
 
+            // MENU 3: MODERN CARD (OWNER ONLY)
+            else if (command === 'menu3') {
+                if (!isOwner) return await sock.sendMessage(from, { text: '⚠️ শুধুমাত্র বট ওনার এই কমান্ড ব্যবহার করতে পারবেন।' });
+                const menu3Text = `
+╔═════════════════════════════╗
+║   🪐 *KUMARJIT T BOT* 🪐   ║
+║      — MODERN CARD MENU —   ║
+╚═════════════════════════════╝
+
+👑 *OWNER PRIVILEGES*
+ ├ .km1 ➔ Auto Group Admin
+ ├ .owner ➔ Owner Info
+ └ .ping ➔ Check Speed
+
+🛠️ *UTILITIES & TOOLS*
+ ├ 1. .ping ➔ System Latency
+ ├ 2. .runtime ➔ Uptime Counter
+ ├ 3. .calc ➔ Math Calculator
+ ├ 4. .qr ➔ QR Generator
+ └ 5. .weather ➔ Weather Info
+
+📥 *DOWNLOADERS*
+ ├ 21. .ytmp3 ➔ YouTube Audio
+ ├ 22. .ytmp4 ➔ YouTube Video
+ ├ 23. .insta ➔ Instagram Video
+ └ 24. .fb ➔ Facebook Video
+
+🤖 *AI & GROUPS*
+ ├ 41. .ai ➔ Gemini AI
+ ├ 61. .tagall ➔ Tag Everyone
+ ├ 62. .welcome ➔ Welcome Banner
+ └ 63. .goodbye ➔ Goodbye Banner
+
+───────────────────────────────
+✨ *Powered By KUMARJIT T BOT*`;
+                await sock.sendMessage(from, { text: menu3Text });
+            }            // INSTAGRAM DOWNLOADER
+            else if (command === 'insta' || command === 'ig') {
+                if (!text) return await sock.sendMessage(from, { text: '⚠️ ইনস্টাগ্রামের ভিডিও/রিলস লিংক দিন। উদাহরণ: .insta <link>' });
+                await sock.sendMessage(from, { text: '⏳ ইনস্টাগ্রাম থেকে ভিডিও ডাউনলোড হচ্ছে, অনুগ্রহ করে অপেক্ষা করুন...' });
+                try {
+                    const res = await axios.get(`https://api.vreden.web.id/api/instagram?url=${encodeURIComponent(text)}`);
+                    const videoUrl = res.data.result?.url?.[0] || res.data.result?.[0];
+                    if (videoUrl) {
+                        await sock.sendMessage(from, { video: { url: videoUrl }, caption: '✅ *Instagram Video Downloaded Successful!*' });
+                    } else {
+                        await sock.sendMessage(from, { text: '❌ ভিডিও পাওয়া যায়নি! লিংকটি সঠিক কি না তা চেক করুন।' });
+                    }
+                } catch (e) {
+                    await sock.sendMessage(from, { text: '❌ ডাউনলোড করতে সমস্যা হয়েছে। অনুগ্রহ করে আবার চেষ্টা করুন।' });
+                }
+            }
+
+            // FACEBOOK DOWNLOADER
+            else if (command === 'fb' || command === 'facebook') {
+                if (!text) return await sock.sendMessage(from, { text: '⚠️ ফেসবুকের ভিডিও লিংক দিন। উদাহরণ: .fb <link>' });
+                await sock.sendMessage(from, { text: '⏳ ফেসবুক থেকে ভিডিও ডাউনলোড হচ্ছে...' });
+                try {
+                    const res = await axios.get(`https://api.vreden.web.id/api/fbdl?url=${encodeURIComponent(text)}`);
+                    const videoUrl = res.data.result?.hd || res.data.result?.sd;
+                    if (videoUrl) {
+                        await sock.sendMessage(from, { video: { url: videoUrl }, caption: '✅ *Facebook Video Downloaded Successful!*' });
+                    } else {
+                        await sock.sendMessage(from, { text: '❌ ভিডিও পাওয়া যায়নি! ফেসবুক লিংকটি চেক করুন।' });
+                    }
+                } catch (e) {
+                    await sock.sendMessage(from, { text: '❌ ফেসবুক ভিডিও ডাউনলোড করতে সমস্যা হয়েছে।' });
+                }
+            }
+
+            // GEMINI AI CHAT
+            else if (command === 'ai' || command === 'gemini') {
+                if (!text) return await sock.sendMessage(from, { text: '⚠️ আপনার প্রশ্নটি লিখুন। উদাহরণ: .ai বাংলাদেশের রাজধানী কি?' });
+                try {
+                    const res = await axios.get(`https://api.vreden.web.id/api/gemini?text=${encodeURIComponent(text)}`);
+                    const reply = res.data.result || res.data.answer || 'কোনো উত্তর পাওয়া যায়নি।';
+                    await sock.sendMessage(from, { text: reply });
+                } catch (e) {
+                    await sock.sendMessage(from, { text: '❌ এআই সার্ভারে সংযোগ করা যাচ্ছে না।' });
+                }
+            }
+
+            // SYSTEM SPEED PING
+            else if (command === 'ping') {
+                const start = Date.now();
+                await sock.sendMessage(from, { text: '🚀 Pinging...' });
+                const end = Date.now();
+                await sock.sendMessage(from, { text: `⚡ *Server Speed:* ${end - start} ms` });
+            }
+
+            // OWNER INFO
+            else if (command === 'owner') {
+                await sock.sendMessage(from, { text: '👑 *Bot Owner:* Kumarjit\n📱 *Contact:* https://wa.me/917980435535' });
+            }
+
+        } catch (err) {
+            console.error('Error handling command:', err);
+        }
     });
 }
 
